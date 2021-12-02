@@ -272,6 +272,21 @@ public:
     return emitError(loc, "expected floating point literal");
   }
 
+  /// Parse a boolean value from the stream.
+  ParseResult parseBoolean(bool &result) override {
+    Token curTok = parser.getToken();
+    llvm::SMLoc loc = curTok.getLoc();
+
+    if(parser.consumeIf(Token::kw_false)) {
+      result = false;
+      return success();
+    } else if (parser.consumeIf(Token::kw_true)) {
+      result = true;
+      return success();
+    }
+    return emitError(loc, "expected boolean literal");
+  }
+
   /// Parse an optional integer value from the stream.
   OptionalParseResult parseOptionalInteger(APInt &result) override {
     return parser.parseOptionalInteger(result);

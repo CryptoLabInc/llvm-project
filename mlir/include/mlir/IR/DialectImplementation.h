@@ -82,6 +82,17 @@ struct FieldParser<
   }
 };
 
+/// Parse a boolean.
+template <>
+struct FieldParser<bool> {
+  static FailureOr<bool> parse(AsmParser &parser) {
+    bool value;
+    if (parser.parseBoolean(value))
+      return failure();
+    return value;
+  }
+};
+
 /// Parse any integer.
 template <typename IntT>
 struct FieldParser<IntT,

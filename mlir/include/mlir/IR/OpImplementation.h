@@ -600,6 +600,9 @@ public:
   /// Parse a floating point value from the stream.
   virtual ParseResult parseFloat(double &result) = 0;
 
+  /// Parse a boolean value from the stream.
+  virtual ParseResult parseBoolean(bool &result) = 0;
+
   /// Parse an integer value from the stream.
   template <typename IntT>
   ParseResult parseInteger(IntT &result) {
