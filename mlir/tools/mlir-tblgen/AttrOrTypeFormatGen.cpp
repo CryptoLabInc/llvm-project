@@ -145,6 +145,10 @@ static const char *const defaultParameterParser =
 static const char *const defaultParameterPrinter =
     "$_printer.printStrippedAttrOrType($_self)";
 
+/// Default printer for string-typed attribute or type parameters.
+static const char *const defaultStringParameterPrinter =
+    "$_printer << \"\\\"\" << $_self << \"\\\"\"";
+
 /// Qualified printer for attribute or type parameters: it does not elide
 /// dialect and mnemonic.
 static const char *const qualifiedParameterPrinter = "$_printer << $_self";
@@ -742,6 +746,8 @@ void DefFormat::genVariablePrinter(ParameterElement *el, FmtContext &ctx,
     os << tgfmt(qualifiedParameterPrinter, &ctx) << ";\n";
   else if (auto printer = param.getPrinter())
     os << tgfmt(*printer, &ctx) << ";\n";
+  else if (param.getCppType().equals("std::string"))
+    os << tgfmt(defaultStringParameterPrinter, &ctx) << ";\n";
   else
     os << tgfmt(defaultParameterPrinter, &ctx) << ";\n";
 
