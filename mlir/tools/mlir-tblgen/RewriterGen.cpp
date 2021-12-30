@@ -571,11 +571,9 @@ void PatternEmitter::emitOpMatch(DagNode tree, StringRef opName, int depth) {
                 "(void){0};\n",
                 castedName, opName, op.getQualCppClassName());
 
-  // Skip the operand matching at depth 0 as the pattern rewriter already does.
-  if (depth != 0)
-    emitMatchCheck(opName, /*matchStr=*/castedName,
-                   formatv("\"{0} is not {1} type\"", castedName,
-                           op.getQualCppClassName()));
+  emitMatchCheck(
+      opName, /*matchStr=*/castedName,
+      formatv("\"{0} is not {1} type\"", castedName, op.getQualCppClassName()));
 
   // If the operand's name is set, set to that variable.
   auto name = tree.getSymbol();
