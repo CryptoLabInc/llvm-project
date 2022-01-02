@@ -25,6 +25,7 @@
 #include <unordered_map>
 
 namespace llvm {
+class IntInit;
 class DagInit;
 class Init;
 class Record;
@@ -80,8 +81,13 @@ public:
   // Returns true if this DAG leaf is specifying an enum attribute case.
   bool isEnumAttrCase() const;
 
+  // Returns true if this DAG leaf is specifying an int attribute.
+  bool isIntAttr() const;
+
   // Returns true if this DAG leaf is specifying a string attribute.
   bool isStringAttr() const;
+
+  int64_t getIntValue() const;
 
   // Returns this DAG leaf as a constraint. Asserts if fails.
   Constraint getAsConstraint() const;

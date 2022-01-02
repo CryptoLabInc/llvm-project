@@ -57,7 +57,15 @@ bool DagLeaf::isEnumAttrCase() const {
   return isSubClassOf("EnumAttrCaseInfo");
 }
 
+bool DagLeaf::isIntAttr() const { return isa<llvm::IntInit>(def); }
+
+
 bool DagLeaf::isStringAttr() const { return isa<llvm::StringInit>(def); }
+
+int64_t DagLeaf::getIntValue() const {
+  assert(isIntAttr() && "the DAG leaf must be an IntegerAttribute");
+  return llvm::dyn_cast_or_null<llvm::IntInit>(def)->getValue();
+}
 
 Constraint DagLeaf::getAsConstraint() const {
   assert((isOperandMatcher() || isAttrMatcher()) &&

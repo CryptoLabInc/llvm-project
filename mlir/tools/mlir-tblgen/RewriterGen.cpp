@@ -1301,9 +1301,27 @@ std::string PatternEmitter::handleReturnTypeArg(DagNode returnType, int i,
 
 std::string PatternEmitter::handleOpArgument(DagLeaf leaf,
                                              StringRef patArgName,
-                                             Argument* opArg) {
-  if (leaf.isStringAttr())
-    PrintFatalError(loc, "raw string not supported as argument");
+                                             Argument *opArg) {
+  if (leaf.isIntAttr()) {
+    assert(opArg->is<NamedAttribute *>() &&
+           "literal arguments can only be attributes.");
+    auto value = leaf.getIntValue();
+    auto attr = opArg->get<NamedAttribute *>()->attr;
+    if (auto valueType = attr.getValueType()) {
+      FmtContext fctx;
+      fctx.withBuilder("rewriter");
+      auto type =
+          tgfmt(valueType.getValue().getBuilderCall().getValue(), &fctx);
+      return attr.getStorageType().str() + "::get(" + type.str() + ", " +
+             std::to_string(value) + ")";
+    } else {
+      return "IntegerAttr::get(IndexType::get(getContext()), " +
+             std::to_string(value) + ")";
+    }
+  }
+  if (leaf.isStringAttr()) {
+    PrintFatalError(loc, "raw string not yet supported as argument");
+  }
   if (leaf.isConstantAttr()) {
     auto constAttr = leaf.getAsConstantAttr();
     return handleConstantAttr(constAttr.getAttribute(),
