@@ -239,6 +239,34 @@ std::string SymbolInfoMap::SymbolInfo::getVarName(StringRef name) const {
   return alternativeName ? *alternativeName : name.str();
 }
 
+bool SymbolInfoMap::SymbolInfo::isVariadic(StringRef name) const {
+  switch (kind) {
+  case Kind::Attr: {
+    return false;
+  }
+  case Kind::Operand: {
+    auto *operand = op->getArg(getArgIndex()).get<NamedTypeConstraint *>();
+    return operand->isVariableLength();
+  }
+  case Kind::Result: {
+    int index = -1;
+    getValuePackName(name, &index);
+    // If `index` is greater than zero, then we are referencing a specific
+    // result of a multi-result op. The result can still be variadic.
+    if (index >= 0)
+      return op->getResult(index).isVariadic();
+
+    return op->getNumResults() > 1;
+  }
+  case Kind::Value: {
+    return false;
+  }
+  case Kind::MultipleValues: {
+    return true;
+  }
+  }
+}
+
 std::string SymbolInfoMap::SymbolInfo::getVarTypeStr(StringRef name) const {
   LLVM_DEBUG(llvm::dbgs() << "getVarTypeStr for '" << name << "': ");
   switch (kind) {
@@ -787,8 +815,9 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
           ++numEither;
       }
     }
-
-    if (numOpArgs != numTreeArgs - numDirectives + numEither) {
+    auto numArgs = numTreeArgs - numDirectives + numEither;
+    auto numVariadicArgs = op.getNumVariableLengthOperands();
+    if (numArgs < numOpArgs || (numVariadicArgs != 1 && numArgs > numOpArgs)) {
       auto err =
           formatv("op '{0}' argument number mismatch: "
                   "{1} in pattern vs. {2} in definition",

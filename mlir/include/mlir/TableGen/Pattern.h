@@ -264,6 +264,9 @@ public:
     // Returns a variable name for the symbol named as `name`.
     std::string getVarName(StringRef name) const;
 
+    // Returns true if this name is bound to a variadic operand or result
+    bool isVariadic(StringRef name) const;
+
   private:
     // Allow SymbolInfoMap to access private methods.
     friend class SymbolInfoMap;

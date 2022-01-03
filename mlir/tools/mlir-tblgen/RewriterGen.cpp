@@ -1387,7 +1387,8 @@ std::string PatternEmitter::handleOpCreation(DagNode tree, int resultIndex,
   auto locToUse = getLocation(tail);
 
   auto inPattern = numPatArgs - tail.numDirectives;
-  if (numOpArgs != inPattern) {
+  auto numVariadicArgs = resultOp.getNumVariableLengthOperands();
+  if (inPattern < numOpArgs || (numVariadicArgs != 1 && inPattern > numOpArgs)) {
     PrintFatalError(loc,
                     formatv("resultant op '{0}' argument number mismatch: "
                             "{1} in pattern vs. {2} in definition",
@@ -1532,17 +1533,31 @@ void PatternEmitter::createSeparateLocalVarsForOpArgs(
     if (operand->isVariadic()) {
       varName = std::string(formatv("tblgen_values_{0}", valueIndex++));
       os << formatv("::llvm::SmallVector<::mlir::Value, 4> {0};\n", varName);
-      std::string range;
-      if (node.isNestedDagArg(argIndex)) {
-        range = childNodeNames[argIndex];
-      } else {
-        range = std::string(node.getArgName(argIndex));
+
+      // We need to find out how many non-variadic inputs we have
+      // Note: this assumes there is exactly one variadic operand!
+      auto numInputsToCombine =
+          (int)node.getNumArgs() - (resultOp.getNumArgs() - 1);
+
+      for (int nodeIndex = argIndex; nodeIndex < argIndex + numInputsToCombine;
+           ++nodeIndex) {
+
+        std::string name;
+        if (node.isNestedDagArg(nodeIndex)) {
+          name = childNodeNames[nodeIndex];
+        } else {
+          name = std::string(node.getArgName(nodeIndex));
+        }
+        // Resolve the symbol for all range use so that we have a uniform way of
+        // capturing the values.
+        std::string range = symbolInfoMap.getValueAndRangeUse(name);
+
+        if (!symbolInfoMap.find(name)->second.isVariadic(name)) {
+          range = "{" + range + "}";
+        }
+        os << formatv("for (auto v: {0}) {{\n  {1}.push_back(v);\n}\n", range,
+                      varName);
       }
-      // Resolve the symbol for all range use so that we have a uniform way of
-      // capturing the values.
-      range = symbolInfoMap.getValueAndRangeUse(range);
-      os << formatv("for (auto v: {0}) {{\n  {1}.push_back(v);\n}\n", range,
-                    varName);
     } else {
       varName = std::string(formatv("tblgen_value_{0}", valueIndex++));
       os << formatv("::mlir::Value {0} = ", varName);
@@ -1646,17 +1661,31 @@ void PatternEmitter::createAggregateLocalVarsForOpArgs(
         resultOp.getArg(argIndex).get<NamedTypeConstraint *>();
     std::string varName;
     if (operand->isVariadic()) {
-      std::string range;
-      if (node.isNestedDagArg(argIndex)) {
-        range = childNodeNames.lookup(argIndex);
-      } else {
-        range = std::string(node.getArgName(argIndex));
+      // We need to find out how many non-variadic inputs we have
+      // Note: this assumes there is exactly one variadic operand!
+      auto numInputsToCombine =
+          (int)node.getNumArgs() - (resultOp.getNumArgs() - 1);
+
+      for (int nodeIndex = argIndex; nodeIndex < argIndex + numInputsToCombine;
+           ++nodeIndex) {
+
+        std::string name;
+        if (node.isNestedDagArg(nodeIndex)) {
+          name = childNodeNames.lookup(nodeIndex);
+        } else {
+          name = std::string(node.getArgName(nodeIndex));
+        }
+        // Resolve the symbol for all range use so that we have a uniform way of
+        // capturing the values.
+        std::string range = symbolInfoMap.getValueAndRangeUse(name);
+
+        if (!symbolInfoMap.find(name)->second.isVariadic(name)) {
+          range = "{" + range + "}";
+        }
+
+        os << formatv(
+            "for (auto v: {0}) {{\n  tblgen_values.push_back(v);\n}\n", range);
       }
-      // Resolve the symbol for all range use so that we have a uniform way of
-      // capturing the values.
-      range = symbolInfoMap.getValueAndRangeUse(range);
-      os << formatv("for (auto v: {0}) {{\n  tblgen_values.push_back(v);\n}\n",
-                    range);
     } else {
       os << formatv("tblgen_values.push_back(");
       if (node.isNestedDagArg(argIndex)) {
