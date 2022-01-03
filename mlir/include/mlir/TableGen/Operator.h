@@ -116,6 +116,7 @@ public:
   // Returns the op result at the given `index`.
   NamedTypeConstraint &getResult(int index) { return results[index]; }
   const NamedTypeConstraint &getResult(int index) const {
+    assert(index < getNumResults() && "Index out of bounds");
     return results[index];
   }
 
