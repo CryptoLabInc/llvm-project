@@ -214,7 +214,7 @@ private:
 
   // Returns the C++ expression to build an argument from the given DAG `leaf`.
   // `patArgName` is used to bound the argument to the source pattern.
-  std::string handleOpArgument(DagLeaf leaf, StringRef patArgName);
+  std::string handleOpArgument(DagLeaf leaf, StringRef patArgName, Argument* opArg = nullptr);
 
   //===--------------------------------------------------------------------===//
   // General utilities
@@ -1300,7 +1300,8 @@ std::string PatternEmitter::handleReturnTypeArg(DagNode returnType, int i,
 }
 
 std::string PatternEmitter::handleOpArgument(DagLeaf leaf,
-                                             StringRef patArgName) {
+                                             StringRef patArgName,
+                                             Argument* opArg) {
   if (leaf.isStringAttr())
     PrintFatalError(loc, "raw string not supported as argument");
   if (leaf.isConstantAttr()) {
@@ -1319,6 +1320,21 @@ std::string PatternEmitter::handleOpArgument(DagLeaf leaf,
   LLVM_DEBUG(llvm::dbgs() << "handle argument '" << patArgName << "'\n");
   auto argName = symbolInfoMap.getValueAndRangeUse(patArgName);
   if (leaf.isUnspecified() || leaf.isOperandMatcher()) {
+    if (symbolInfoMap.find(argName) != symbolInfoMap.end()) {
+      auto symbolInfo = symbolInfoMap.find(argName)->second;
+      if (symbolInfo.isTypeParam()) {
+        // TODO(aviand): Find the attribute type the operation expects
+        assert(opArg &&
+               "Cannot convert TypeParams without information on op arg");
+        assert(opArg->is<NamedAttribute *>() &&
+               "TypeParams can only be attributes.");
+        auto attr = opArg->get<NamedAttribute *>()->attr;
+        // TODO(aviand): Wrap the type parameter into the appropriate attribute!
+        return attr.getStorageType().str() + "::get(" +
+               attr.getValueType().getValue().getCPPClassName() +
+               "::get(getContext()), " + argName + ")";
+      }
+    }
     LLVM_DEBUG(llvm::dbgs() << "replace " << patArgName << " with '" << argName
                             << "' (via symbol ref)\n");
     return argName;
@@ -1708,7 +1724,7 @@ void PatternEmitter::supplyValuesForOpArgs(
       } else {
         os << "/*" << opArgName << "=*/";
       }
-      os << handleOpArgument(leaf, patArgName);
+      os << handleOpArgument(leaf, patArgName, &opArg);
     }
   }
 }
