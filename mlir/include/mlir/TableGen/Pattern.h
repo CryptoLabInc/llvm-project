@@ -165,13 +165,20 @@ public:
 
   // Gets the `index`-th argument as a nested DAG construct if possible. Returns
   // null DagNode otherwise.
-  DagNode getArgAsNestedDag(unsigned index) const;
+  DagNode getArgAsDagNode(unsigned index) const;
 
   // Gets the `index`-th argument as a DAG leaf.
   DagLeaf getArgAsLeaf(unsigned index) const;
 
+  llvm::Init* getArg(unsigned index) const;
+
   // Returns the specified name of the `index`-th argument.
   StringRef getArgName(unsigned index) const;
+
+  // Returns true if this DAG leaf is not specified in the pattern. That is, it
+  // places no further constraints/transforms and just carries over the original
+  // value.
+  bool isUnspecified() const;
 
   // Returns true if this DAG construct means to replace with an existing SSA
   // value.
@@ -191,6 +198,20 @@ public:
 
   // Returns true if this DAG node is an operation.
   bool isOperation() const;
+
+  // Returns true if this DAG node is a complex type constraint.
+  bool isComplexTypeConstraint() const;
+
+  // Returns true if this DAG leaf is matching an operand. That is, it specifies
+  // a type constraint.
+  bool isOperandMatcher() const;
+
+  // Returns true if this DAG leaf is matching an attribute. That is, it
+  // specifies an attribute constraint.
+  bool isAttrMatcher() const;
+
+  // Returns this DAG node as a constraint. Asserts if fails.
+  Constraint getAsConstraint() const;
 
   // Returns the native code call template inside this DAG node.
   // Precondition: isNativeCodeCall()
@@ -253,6 +274,8 @@ public:
     // Returns a type string of a variable.
     std::string getVarTypeStr(StringRef name) const;
 
+    std::string getTypeParamAccessor(StringRef name) const;
+
     // Returns a string for defining a variable named as `name` to store the
     // value bound by this symbol.
     std::string getVarDecl(StringRef name) const;
@@ -266,6 +289,8 @@ public:
 
     // Returns true if this name is bound to a variadic operand or result
     bool isVariadic(StringRef name) const;
+
+    bool isTypeParam() const;
 
   private:
     // Allow SymbolInfoMap to access private methods.
@@ -282,7 +307,8 @@ public:
     // * Value: a value not attached to an op (e.g., from NativeCodeCall)
     // * MultipleValues: a pack of values not attached to an op (e.g., from
     //   NativeCodeCall). This kind supports indexing.
-    enum class Kind : uint8_t { Attr, Operand, Result, Value, MultipleValues };
+    // * TypeParam: a C++ value appearing as a type parameter
+    enum class Kind : uint8_t { Attr, Operand, Result, Value, MultipleValues, TypeParam };
 
     // Creates a SymbolInfo instance. `dagAndConstant` is only used for `Attr`
     // and `Operand` so should be llvm::None for `Result` and `Value` kind.
@@ -309,6 +335,14 @@ public:
     static SymbolInfo getMultipleValues(int numValues) {
       return SymbolInfo(nullptr, Kind::MultipleValues,
                         DagAndConstant(nullptr, numValues));
+    }
+    static SymbolInfo getTypeParam(const Operator *op, DagNode opNode,
+                                   int opArgIndex, DagNode constraintArgNode,
+                                   int index) {
+      // TODO(aviand): Find a better way to save both indices, or both nodes
+      return SymbolInfo(op, Kind::TypeParam,
+                        DagAndConstant(opNode.getAsOpaquePointer(),
+                                       opArgIndex * 1000 + index));
     }
 
     // Returns the number of static values this symbol corresponds to.
@@ -372,6 +406,11 @@ public:
   bool bindOpArgument(DagNode node, StringRef symbol, const Operator &op,
                       int argIndex);
 
+  // Binds the given `symbol` to the `argIndex`-th argument to the given complex type..
+  // Returns false if `symbol` is already bound and symbols are not operands.
+  bool bindTypeArgument(DagNode opNode, const Operator &op, int opArgIndex,
+                        StringRef symbol, int typeParamIndex);
+
   // Binds the given `symbol` to the results the given `op`. Returns false if
   // `symbol` is already bound.
   bool bindOpResult(StringRef symbol, const Operator &op);
@@ -401,6 +440,11 @@ public:
   // with index `argIndex` for operator `op`.
   const_iterator findBoundSymbol(StringRef key, DagNode node,
                                  const Operator &op, int argIndex) const;
+
+  const_iterator findBoundSymbol(StringRef key, DagNode opNode,
+                                 const Operator &op, int opArgIndex,
+                                 DagNode constraintNode, int paramIndex) const;
+
   const_iterator findBoundSymbol(StringRef key,
                                  const SymbolInfo &symbolInfo) const;
 

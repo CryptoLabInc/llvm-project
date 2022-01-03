@@ -62,7 +62,7 @@ void StaticVerifierFunctionEmitter::emitOpConstraints(
 }
 
 void StaticVerifierFunctionEmitter::emitPatternConstraints(
-    const llvm::ArrayRef<DagLeaf> constraints) {
+    const ConstraintSet &constraints) {
   collectPatternConstraints(constraints);
   emitPatternConstraints();
 }
@@ -297,12 +297,15 @@ void StaticVerifierFunctionEmitter::collectOpConstraints(
 }
 
 void StaticVerifierFunctionEmitter::collectPatternConstraints(
-    const llvm::ArrayRef<DagLeaf> constraints) {
-  for (auto &leaf : constraints) {
-    assert(leaf.isOperandMatcher() || leaf.isAttrMatcher());
-    collectConstraint(
-        leaf.isOperandMatcher() ? typeConstraints : attrConstraints,
-        leaf.isOperandMatcher() ? "type" : "attr", leaf.getAsConstraint());
+    const ConstraintSet &constraints) {
+  for (auto &c : constraints) {
+    auto x = [&](auto c) {
+      assert(c.isOperandMatcher() || c.isAttrMatcher());
+      collectConstraint(
+          c.isOperandMatcher() ? typeConstraints : attrConstraints,
+          c.isOperandMatcher() ? "type" : "attr", c.getAsConstraint());
+    };
+    c.first ? x(c.first) : x(c.second);
   }
 }
 

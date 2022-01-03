@@ -20,6 +20,7 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/TableGen/Error.h"
 #include "llvm/TableGen/Record.h"
+#include "mlir/TableGen/AttrOrTypeDef.h"
 
 #define DEBUG_TYPE "mlir-tblgen-pattern"
 
@@ -114,8 +115,35 @@ bool DagNode::isNativeCodeCall() const {
 }
 
 bool DagNode::isOperation() const {
-  return !isNativeCodeCall() && !isReplaceWithValue() &&
-         !isLocationDirective() && !isReturnTypeDirective() && !isEither();
+  return !isComplexTypeConstraint() && !isNativeCodeCall() &&
+         !isReplaceWithValue() && !isLocationDirective() &&
+         !isReturnTypeDirective() && !isEither();
+}
+
+bool DagNode::isComplexTypeConstraint() const {
+  if (auto *defInit = dyn_cast_or_null<llvm::DefInit>(node->getOperator()))
+    return defInit->getDef()->isSubClassOf("TypeConstraint");
+  return false;
+}
+
+bool DagNode::isOperandMatcher() const {
+  // Operand matchers specify a type constraint.
+  if (auto *defInit = dyn_cast_or_null<llvm::DefInit>(node->getOperator()))
+    return defInit->getDef()->isSubClassOf("TypeConstraint");
+  return false;
+}
+
+bool DagNode::isAttrMatcher() const {
+  // Attribute matchers specify an attribute constraint.
+  if (auto *defInit = dyn_cast_or_null<llvm::DefInit>(node->getOperator()))
+    return defInit->getDef()->isSubClassOf("AttrConstraint");
+  return false;
+}
+
+Constraint DagNode::getAsConstraint() const {
+  assert((isOperandMatcher() || isAttrMatcher() || isComplexTypeConstraint()) &&
+         "the DAG node must be operand or attribute");
+  return Constraint(cast<llvm::DefInit>(node->getOperator())->getDef());
 }
 
 llvm::StringRef DagNode::getNativeCodeTemplate() const {
@@ -148,7 +176,7 @@ int DagNode::getNumOps() const {
   // All other directives should be excluded.
   int count = isOperation() ? 1 : 0;
   for (int i = 0, e = getNumArgs(); i != e; ++i) {
-    if (auto child = getArgAsNestedDag(i))
+    if (auto child = getArgAsDagNode(i))
       count += child.getNumOps();
   }
   return count;
@@ -160,7 +188,7 @@ bool DagNode::isNestedDagArg(unsigned index) const {
   return isa<llvm::DagInit>(node->getArg(index));
 }
 
-DagNode DagNode::getArgAsNestedDag(unsigned index) const {
+DagNode DagNode::getArgAsDagNode(unsigned index) const {
   return DagNode(dyn_cast_or_null<llvm::DagInit>(node->getArg(index)));
 }
 
@@ -169,8 +197,16 @@ DagLeaf DagNode::getArgAsLeaf(unsigned index) const {
   return DagLeaf(node->getArg(index));
 }
 
+llvm::Init* DagNode::getArg(unsigned index) const {
+  return node->getArg(index);
+}
+
 StringRef DagNode::getArgName(unsigned index) const {
   return node->getArgNameStr(index);
+}
+
+bool DagNode::isUnspecified() const {
+  return dyn_cast_or_null<llvm::UnsetInit>(node);
 }
 
 bool DagNode::isReplaceWithValue() const {
@@ -231,6 +267,8 @@ int SymbolInfoMap::SymbolInfo::getStaticValueCount() const {
     return op->getNumResults();
   case Kind::MultipleValues:
     return getSize();
+  case Kind::TypeParam:
+    return 1;
   }
   llvm_unreachable("unknown kind");
 }
@@ -264,6 +302,9 @@ bool SymbolInfoMap::SymbolInfo::isVariadic(StringRef name) const {
   case Kind::MultipleValues: {
     return true;
   }
+  case Kind::TypeParam: {
+    return false;
+  }
   }
 }
 
@@ -294,6 +335,50 @@ std::string SymbolInfoMap::SymbolInfo::getVarTypeStr(StringRef name) const {
     // Use the op itself for captured results.
     return op->getQualCppClassName();
   }
+  case Kind::TypeParam: {
+    //TODO(aviand): Remove 1000*opArgIndex + paramIndex hack
+    const auto *opNode = (const llvm::DagInit*)  dagAndConstant->first;
+    auto opArgIndex = dagAndConstant->second / 1000;
+    auto * constraintNode =  (const llvm::DagInit*) opNode->getArg(opArgIndex);
+    auto * dagOperator = constraintNode->getOperator();
+    auto * defInit = llvm::cast_or_null<llvm::DefInit>(dagOperator);
+    auto * record = defInit->getDef();
+    auto attrOrTypeDef = AttrOrTypeDef(record);
+    auto paramIndex = dagAndConstant->second % 1000;
+    auto type = attrOrTypeDef.getParameters()[paramIndex].getCppType();
+    return type.str();
+  }
+  }
+  llvm_unreachable("unknown kind");
+}
+
+std::string SymbolInfoMap::SymbolInfo::getTypeParamAccessor(StringRef name) const {
+  switch (kind) {
+  case Kind::TypeParam: {
+    //TODO(aviand): Remove 1000*opArgIndex + paramIndex hack
+    const auto *opNode = (const llvm::DagInit*)  dagAndConstant->first;
+    auto opArgIndex = dagAndConstant->second / 1000;
+    auto * constraintNode =  (const llvm::DagInit*) opNode->getArg(opArgIndex);
+    auto *defInit =
+        llvm::cast_or_null<llvm::DefInit>(constraintNode->getOperator());
+    auto type = AttrOrTypeDef(defInit->getDef());
+    auto paramIndex = dagAndConstant->second % 1000;
+    auto parm = type.getParameters()[paramIndex];
+    auto getParameterAccessorName = [](StringRef name) {
+      auto ret = "get" + name.str();
+      ret[3] = llvm::toUpper(ret[3]); // uppercase first letter of the name
+      return ret;
+    };
+    return ".getType().cast<" +  type.getCppClassName().str() + ">()." +
+           getParameterAccessorName(parm.getName()) + "()";
+  }
+  case Kind::Attr:
+  case Kind::Operand:
+  case Kind::Value:
+  case Kind::MultipleValues:
+  case Kind::Result:
+    assert(kind == Kind::TypeParam &&
+           "Cannot call getTypeParamAccessor on other kinds");
   }
   llvm_unreachable("unknown kind");
 }
@@ -393,6 +478,12 @@ std::string SymbolInfoMap::SymbolInfo::getValueAndRangeUse(
     LLVM_DEBUG(llvm::dbgs() << repl << " (MultipleValues)\n");
     return std::string(repl);
   }
+  case Kind::TypeParam: {
+    //TODO(aviand): Support TypeParam in getValueAndRangeUse
+    auto repl = formatv(fmt, name);
+    LLVM_DEBUG(llvm::dbgs() << repl << " (TypeParam)\n");
+    return std::string(repl);
+  }
   }
   llvm_unreachable("unknown kind");
 }
@@ -449,8 +540,18 @@ std::string SymbolInfoMap::SymbolInfo::getAllRangeUse(
     LLVM_DEBUG(llvm::dbgs() << repl << " (MultipleValues)\n");
     return std::string(repl);
   }
+  case Kind::TypeParam: {
+    //TODO(aviand): What to assert for TypeParam in getAllRangeUse?
+    auto repl = formatv(fmt, formatv("{{{0}}", name));
+    LLVM_DEBUG(llvm::dbgs() << repl << " (TypeRange)\n");
+    return std::string(repl);
+  }
   }
   llvm_unreachable("unknown kind");
+}
+
+bool SymbolInfoMap::SymbolInfo::isTypeParam() const {
+  return kind == Kind::TypeParam;
 }
 
 bool SymbolInfoMap::bindOpArgument(DagNode node, StringRef symbol,
@@ -476,6 +577,41 @@ bool SymbolInfoMap::bindOpArgument(DagNode node, StringRef symbol,
     // Cannot add new operand if there is already non operand with the same
     // name.
     if (symbolInfoMap.find(key)->second.kind != SymbolInfo::Kind::Operand) {
+      return false;
+    }
+  }
+
+  symbolInfoMap.emplace(key, symInfo);
+  return true;
+}
+
+bool SymbolInfoMap::bindTypeArgument(DagNode opNode, const Operator &op, int opArgIndex, StringRef symbol,
+                                     int typeParamIndex) {
+  LLVM_DEBUG(llvm::dbgs() << "binding type argument " << symbol
+                          << " (op dag: " << opNode.node
+                          << ", arg index: " << opArgIndex
+                          << ", param index: " << typeParamIndex << ")\n");
+  StringRef name = getValuePackName(symbol);
+  if (name != symbol) {
+    auto error = formatv(
+        "symbol '{0}' with trailing index cannot bind to type argument", symbol);
+    PrintFatalError(loc, error);
+  }
+
+  auto symInfo = SymbolInfo::getTypeParam(&op, opNode, opArgIndex,
+                                          opNode.getArgAsDagNode(opArgIndex),
+                                          typeParamIndex);
+
+  std::string key = symbol.str();
+  if (symbolInfoMap.count(key)) {
+    // Only non unique name for the operand is supported.
+    if (symInfo.kind != SymbolInfo::Kind::TypeParam) {
+      return false;
+    }
+
+    // Cannot add new operand if there is already non operand with the same
+    // name.
+    if (symbolInfoMap.find(key)->second.kind != SymbolInfo::Kind::TypeParam) {
       return false;
     }
   }
@@ -532,14 +668,30 @@ SymbolInfoMap::findBoundSymbol(StringRef key, DagNode node, const Operator &op,
 }
 
 SymbolInfoMap::const_iterator
+SymbolInfoMap::findBoundSymbol(StringRef key, DagNode opNode, const Operator &op, int opArgIndex,
+                               DagNode constraintNode, int paramIndex) const {
+  return findBoundSymbol(key,
+                         SymbolInfo::getTypeParam(&op, opNode, opArgIndex,
+                                                  constraintNode, paramIndex));
+}
+
+SymbolInfoMap::const_iterator
 SymbolInfoMap::findBoundSymbol(StringRef key,
                                const SymbolInfo &symbolInfo) const {
   std::string name = getValuePackName(key).str();
   auto range = symbolInfoMap.equal_range(name);
 
+  //TODO(aviand): Remove 1000*opArgIndex + paramIndex hack
   for (auto it = range.first; it != range.second; ++it)
-    if (it->second.dagAndConstant == symbolInfo.dagAndConstant)
-      return it;
+    if (it->second.isTypeParam()) {
+      if (it->second.dagAndConstant->first == symbolInfo.dagAndConstant->first)
+        if (it->second.dagAndConstant->second / 1000 ==
+            symbolInfo.dagAndConstant->second / 1000)
+          return it;
+    } else {
+      if (it->second.dagAndConstant == symbolInfo.dagAndConstant)
+        return it;
+    }
 
   return symbolInfoMap.end();
 }
@@ -757,7 +909,7 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
     }
 
     for (int i = 0; i != numTreeArgs; ++i) {
-      if (auto treeArg = tree.getArgAsNestedDag(i)) {
+      if (auto treeArg = tree.getArgAsDagNode(i)) {
         // This DAG node argument is a DAG node itself. Go inside recursively.
         collectBoundSymbols(treeArg, infoMap, isSrcPattern);
         continue;
@@ -808,7 +960,7 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
     // two operands of the operation.
     int numDirectives = 0;
     for (int i = numTreeArgs - 1; i >= 0; --i) {
-      if (auto dagArg = tree.getArgAsNestedDag(i)) {
+      if (auto dagArg = tree.getArgAsDagNode(i)) {
         if (dagArg.isLocationDirective() || dagArg.isReturnTypeDirective())
           ++numDirectives;
         else if (dagArg.isEither())
@@ -838,7 +990,7 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
     auto collectSymbolInEither = [&](DagNode parent, DagNode tree,
                                      int &opArgIdx) {
       for (int i = 0; i < tree.getNumArgs(); ++i, ++opArgIdx) {
-        if (DagNode subTree = tree.getArgAsNestedDag(i)) {
+        if (DagNode subTree = tree.getArgAsDagNode(i)) {
           collectBoundSymbols(subTree, infoMap, isSrcPattern);
         } else {
           auto argName = tree.getArgName(i);
@@ -850,9 +1002,24 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
     };
 
     for (int i = 0, opArgIdx = 0; i != numTreeArgs; ++i, ++opArgIdx) {
-      if (auto treeArg = tree.getArgAsNestedDag(i)) {
+      if (auto treeArg = tree.getArgAsDagNode(i)) {
         if (treeArg.isEither()) {
           collectSymbolInEither(tree, treeArg, opArgIdx);
+        } else if (treeArg.isComplexTypeConstraint()) {
+          // Bind main value name
+          auto operandName = tree.getArgName(opArgIdx);
+          verifyBind(infoMap.bindOpArgument(tree, operandName, op, opArgIdx),
+                     operandName);
+
+          // ComplexTypeConstraint
+          for (int j = 0; j < treeArg.getNumArgs(); ++j) {
+            auto typeParamName = treeArg.getArgName(j);
+            if (!typeParamName.empty() && typeParamName != "_")
+              verifyBind(infoMap.bindTypeArgument(tree, op, opArgIdx,
+                                                  typeParamName, j),
+                         typeParamName);
+          }
+
         } else {
           // This DAG node argument is a DAG node itself. Go inside recursively.
           collectBoundSymbols(treeArg, infoMap, isSrcPattern);
