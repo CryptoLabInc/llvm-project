@@ -300,6 +300,10 @@ public:
 
     bool isTypeParam() const;
 
+    bool isAttribute() const;
+
+    bool isValue() const;
+
     bool isRepeatResult() const;
 
   private:

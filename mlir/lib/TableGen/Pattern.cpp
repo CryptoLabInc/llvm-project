@@ -643,6 +643,14 @@ bool SymbolInfoMap::SymbolInfo::isTypeParam() const {
   return kind == Kind::TypeParam;
 }
 
+bool SymbolInfoMap::SymbolInfo::isAttribute() const {
+  return kind == Kind::Attr;
+}
+
+bool SymbolInfoMap::SymbolInfo::isValue() const {
+  return kind == Kind::Value;
+}
+
 bool SymbolInfoMap::SymbolInfo::isRepeatResult() const {
   return kind == Kind::RepeatResult;
 }

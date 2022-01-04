@@ -1297,21 +1297,21 @@ std::string PatternEmitter::handleRepeat(DagNode tree, int depth) {
     }
 
     if (startLeaf.isUnspecified()) {
-      // variable, which needs to point to a TypeParam
       auto matchedName = tree.getArgName(index);
       auto symbolInfo = symbolInfoMap.find(matchedName)->second;
-      if (!symbolInfo.isTypeParam()) {
-        llvm::PrintFatalError(
-            "'repeat' currently supports only literal ints and "
-            "matched type parameters for `start` and `end`");
+      if (symbolInfo.isTypeParam()) {
+        return symbolInfo.getVarName(matchedName);
+      } else if (symbolInfo.isValue()) {
+        // This will only compile if the symbol refers to an attribute
+        return symbolInfo.getVarName(matchedName) + ".getInt()";
+      } else if (symbolInfo.isAttribute()) {
+        return symbolInfo.getVarName(matchedName) + ".getInt()";
       }
-      return symbolInfo.getVarName(matchedName);
-      // TODO(aviand): Are there any other cases that make sense? Attributes?
     }
 
     llvm::PrintFatalError(
-          "'repeat' currently supports only literal ints and "
-          "variables for `start` and `end`");
+        "'repeat' currently supports only literal ints, attributes and "
+        "matched type parameters for `start` and `end`");
   };
 
   // Get start and end value for iteration
