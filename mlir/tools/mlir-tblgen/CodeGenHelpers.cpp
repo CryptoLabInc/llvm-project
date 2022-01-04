@@ -300,10 +300,10 @@ void StaticVerifierFunctionEmitter::collectPatternConstraints(
     const ConstraintSet &constraints) {
   for (auto &c : constraints) {
     auto x = [&](auto c) {
-      assert(c.isOperandMatcher() || c.isAttrMatcher());
-      collectConstraint(
-          c.isOperandMatcher() ? typeConstraints : attrConstraints,
-          c.isOperandMatcher() ? "type" : "attr", c.getAsConstraint());
+      auto isCorTC = c.isComplexTypeConstraint() || c.isTypeConstraint();
+      assert(isCorTC || c.isAttrConstraint());
+      collectConstraint(isCorTC ? typeConstraints : attrConstraints,
+                        isCorTC ? "type" : "attr", c.getAsConstraint());
     };
     c.first ? x(c.first) : x(c.second);
   }

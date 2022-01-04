@@ -57,6 +57,18 @@ StringRef Constraint::getSummary() const {
   return def->getName();
 }
 
+StringRef Constraint::getCppClassName() const {
+  return def->getValueAsString("cppClassName");
+}
+
+std::vector<StringRef> Constraint::getParameters() const {
+  std::vector<StringRef> v;
+  for (auto *init : def->getValueAsDag("parameters")->getArgNames()) {
+    v.push_back(init->getValue());
+  }
+  return v;
+}
+
 StringRef Constraint::getDescription() const {
   return def->getValueAsOptionalString("description").value_or("");
 }

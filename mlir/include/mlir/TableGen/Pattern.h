@@ -66,11 +66,11 @@ public:
 
   // Returns true if this DAG leaf is matching an operand. That is, it specifies
   // a type constraint.
-  bool isOperandMatcher() const;
+  bool isTypeConstraint() const;
 
   // Returns true if this DAG leaf is matching an attribute. That is, it
   // specifies an attribute constraint.
-  bool isAttrMatcher() const;
+  bool isAttrConstraint() const;
 
   // Returns true if this DAG leaf is wrapping native code call.
   bool isNativeCodeCall() const;
@@ -81,11 +81,13 @@ public:
   // Returns true if this DAG leaf is specifying an enum attribute case.
   bool isEnumAttrCase() const;
 
+  bool isComplexTypeConstraint() const { return false; }
+
   // Returns true if this DAG leaf is specifying an int attribute.
-  bool isIntAttr() const;
+  bool isInt() const;
 
   // Returns true if this DAG leaf is specifying a string attribute.
-  bool isStringAttr() const;
+  bool isString() const;
 
   int64_t getIntValue() const;
 
@@ -176,8 +178,6 @@ public:
   // Gets the `index`-th argument as a DAG leaf.
   DagLeaf getArgAsLeaf(unsigned index) const;
 
-  llvm::Init* getArg(unsigned index) const;
-
   // Returns the specified name of the `index`-th argument.
   StringRef getArgName(unsigned index) const;
 
@@ -211,13 +211,12 @@ public:
   // Returns true if this DAG node is a complex type constraint.
   bool isComplexTypeConstraint() const;
 
-  // Returns true if this DAG leaf is matching an operand. That is, it specifies
-  // a type constraint.
-  bool isOperandMatcher() const;
+  // Returns true if this DAG node specifies a type constraint.
+  bool isTypeConstraint() const;
 
   // Returns true if this DAG leaf is matching an attribute. That is, it
   // specifies an attribute constraint.
-  bool isAttrMatcher() const;
+  bool isAttrConstraint() const;
 
   // Returns this DAG node as a constraint. Asserts if fails.
   Constraint getAsConstraint() const;

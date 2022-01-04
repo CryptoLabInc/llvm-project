@@ -71,6 +71,10 @@ public:
 
   Kind getKind() const { return kind; }
 
+  StringRef getCppClassName() const;
+
+  std::vector<StringRef> getParameters() const;
+
 protected:
   // The TableGen definition of this constraint.
   const llvm::Record *def;

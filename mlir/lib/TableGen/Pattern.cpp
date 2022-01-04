@@ -37,12 +37,12 @@ bool DagLeaf::isUnspecified() const {
   return isa_and_nonnull<llvm::UnsetInit>(def);
 }
 
-bool DagLeaf::isOperandMatcher() const {
+bool DagLeaf::isTypeConstraint() const {
   // Operand matchers specify a type constraint.
   return isSubClassOf("TypeConstraint");
 }
 
-bool DagLeaf::isAttrMatcher() const {
+bool DagLeaf::isAttrConstraint() const {
   // Attribute matchers specify an attribute constraint.
   return isSubClassOf("AttrConstraint");
 }
@@ -57,18 +57,18 @@ bool DagLeaf::isEnumAttrCase() const {
   return isSubClassOf("EnumAttrCaseInfo");
 }
 
-bool DagLeaf::isIntAttr() const { return isa<llvm::IntInit>(def); }
+bool DagLeaf::isInt() const { return isa<llvm::IntInit>(def); }
 
 
-bool DagLeaf::isStringAttr() const { return isa<llvm::StringInit>(def); }
+bool DagLeaf::isString() const { return isa<llvm::StringInit>(def); }
 
 int64_t DagLeaf::getIntValue() const {
-  assert(isIntAttr() && "the DAG leaf must be an IntegerAttribute");
+  assert(isInt() && "the DAG leaf must be an IntegerAttribute");
   return llvm::dyn_cast_or_null<llvm::IntInit>(def)->getValue();
 }
 
 Constraint DagLeaf::getAsConstraint() const {
-  assert((isOperandMatcher() || isAttrMatcher()) &&
+  assert((isTypeConstraint() || isAttrConstraint()) &&
          "the DAG leaf must be operand or attribute");
   return Constraint(cast<llvm::DefInit>(def)->getDef());
 }
@@ -98,7 +98,7 @@ int DagLeaf::getNumReturnsOfNativeCode() const {
 }
 
 std::string DagLeaf::getStringAttr() const {
-  assert(isStringAttr() && "the DAG leaf must be string attribute");
+  assert(isString() && "the DAG leaf must be string attribute");
   return def->getAsUnquotedString();
 }
 bool DagLeaf::isSubClassOf(StringRef superclass) const {
@@ -134,14 +134,14 @@ bool DagNode::isComplexTypeConstraint() const {
   return false;
 }
 
-bool DagNode::isOperandMatcher() const {
+bool DagNode::isTypeConstraint() const {
   // Operand matchers specify a type constraint.
-  if (auto *defInit = dyn_cast_or_null<llvm::DefInit>(node->getOperator()))
+  if (auto *defInit = dyn_cast_or_null<llvm::DefInit>(node))
     return defInit->getDef()->isSubClassOf("TypeConstraint");
   return false;
 }
 
-bool DagNode::isAttrMatcher() const {
+bool DagNode::isAttrConstraint() const {
   // Attribute matchers specify an attribute constraint.
   if (auto *defInit = dyn_cast_or_null<llvm::DefInit>(node->getOperator()))
     return defInit->getDef()->isSubClassOf("AttrConstraint");
@@ -149,7 +149,7 @@ bool DagNode::isAttrMatcher() const {
 }
 
 Constraint DagNode::getAsConstraint() const {
-  assert((isOperandMatcher() || isAttrMatcher() || isComplexTypeConstraint()) &&
+  assert((isTypeConstraint() || isAttrConstraint() || isComplexTypeConstraint()) &&
          "the DAG node must be operand or attribute");
   return Constraint(cast<llvm::DefInit>(node->getOperator())->getDef());
 }
@@ -203,10 +203,6 @@ DagNode DagNode::getArgAsDagNode(unsigned index) const {
 DagLeaf DagNode::getArgAsLeaf(unsigned index) const {
   assert(!isNestedDagArg(index));
   return DagLeaf(node->getArg(index));
-}
-
-llvm::Init* DagNode::getArg(unsigned index) const {
-  return node->getArg(index);
 }
 
 StringRef DagNode::getArgName(unsigned index) const {
@@ -1046,7 +1042,7 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
           verifyBind(infoMap.bindValue(treeArgName), treeArgName);
         } else {
           auto constraint = leaf.getAsConstraint();
-          bool isAttr = leaf.isAttrMatcher() || leaf.isEnumAttrCase() ||
+          bool isAttr = leaf.isAttrConstraint() || leaf.isEnumAttrCase() ||
                         leaf.isConstantAttr() ||
                         constraint.getKind() == Constraint::Kind::CK_Attr;
 

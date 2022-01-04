@@ -486,7 +486,7 @@ void PatternEmitter::emitNativeCodeMatch(DagNode tree, StringRef opName,
       os << "::mlir::Value " << argName << ";\n";
     } else {
       auto leaf = tree.getArgAsLeaf(i);
-      if (leaf.isAttrMatcher() || leaf.isConstantAttr()) {
+      if (leaf.isAttrConstraint() || leaf.isConstantAttr()) {
         os << "::mlir::Attribute " << argName << ";\n";
       } else {
         os << "::mlir::Value " << argName << ";\n";
@@ -540,7 +540,7 @@ void PatternEmitter::emitNativeCodeMatch(DagNode tree, StringRef opName,
     auto constraint = leaf.getAsConstraint();
 
     std::string self;
-    if (leaf.isAttrMatcher() || leaf.isConstantAttr())
+    if (leaf.isAttrConstraint() || leaf.isConstantAttr())
       self = argName;
     else
       self = formatv("{0}.getType()", argName);
@@ -673,7 +673,7 @@ void PatternEmitter::emitOperandMatch(DagNode tree, StringRef opName,
   // If a constraint is specified, we need to generate C++ statements to
   // check the constraint.
   if (!operandMatcher.isUnspecified()) {
-    if (!operandMatcher.isOperandMatcher())
+    if (!operandMatcher.isTypeConstraint())
       PrintFatalError(
           loc, formatv("the {1}-th argument of op '{0}' should be an operand",
                        op.getOperationName(), argIndex + 1));
@@ -779,16 +779,12 @@ void PatternEmitter::emitEitherOperandMatch(DagNode tree, DagNode eitherArgTree,
 void PatternEmitter::emitComplexTypeConstraintOperandMatch(
     DagNode tree, DagNode constraintArgTree, StringRef opName, int argIndex,
     int &operandIndex, int depth) {
-  Operator &op = tree.getDialectOp(opMap);
-  auto operandName = formatv("{0}.getODSOperands({1})", opName, operandIndex);
-  auto argName = tree.getArgName(argIndex);
 
-  // Ensure that the constraint actually exists
-  if (!constraintArgTree.isUnspecified())
-    if (!constraintArgTree.isComplexTypeConstraint())
-      PrintFatalError(
-          loc, formatv("the {1}-th argument of op '{0}' should be an operand",
-                       op.getOperationName(), argIndex + 1));
+  assert(constraintArgTree.isComplexTypeConstraint());
+
+  Operator &op = tree.getDialectOp(opMap);
+  auto operandName = formatv("{0}.getODSOperands({1})", opName, operandIndex).str();
+  auto argName = tree.getArgName(argIndex);
 
   // Check the main type:
   auto typeConstraint = constraintArgTree.getAsConstraint();
@@ -807,41 +803,76 @@ void PatternEmitter::emitComplexTypeConstraintOperandMatch(
   if (!argName.empty() && argName != "_") {
     auto res = symbolInfoMap.findBoundSymbol(argName, tree, op, argIndex);
     os << formatv("{0} = {1};\n", res->second.getVarName(argName), operandName);
+  } else {
+    // if there is no variable name, we have to use the full "path" via the op
+    argName = operandName;
   }
 
-  // Capture the type values
   for (int i = 0; i < constraintArgTree.getNumArgs(); ++i) {
+
+    // Capture the type parameter
     auto nestedArgName = constraintArgTree.getArgName(i);
     if (!nestedArgName.empty() && nestedArgName != "_") {
-      auto res =
-          symbolInfoMap.findBoundSymbol(nestedArgName, tree, op, argIndex, constraintArgTree, i);
+      auto res = symbolInfoMap.findBoundSymbol(nestedArgName, tree, op,
+                                               argIndex, constraintArgTree, i);
       SymbolInfoMap::SymbolInfo si = res->second;
       os << formatv("{0} = {1}{2};\n", res->second.getVarName(nestedArgName),
                     opName, res->second.getTypeParamAccessor(nestedArgName));
-
     }
 
-    // Check if value is correct:
-    auto *dagInit = llvm::cast_or_null<llvm::DagInit>(tree.getArg(argIndex));
-    auto *defInit = llvm::cast_or_null<llvm::DefInit>(dagInit->getOperator());
-    auto type = AttrOrTypeDef(defInit->getDef());
+    // Check if the type parameter fulfills its constraint:
     auto getParameterAccessorName = [](StringRef name) {
       auto ret = "get" + name.str();
       ret[3] = llvm::toUpper(ret[3]); // uppercase first letter of the name
       return ret;
     };
-    auto parm = type.getParameters()[i];
-    auto accessorStr =  ".getType().cast<" +  type.getCppClassName().str() + ">()." +
-           getParameterAccessorName(parm.getName()) + "()";
+    auto typeStr = typeConstraint.getCppClassName();
+    auto paramName = typeConstraint.getParameters()[i];
+    auto paramAccessorStr = ".getType().cast<" + typeStr.str() + ">()." +
+                            getParameterAccessorName(paramName) + "()";
 
-    auto *init = constraintArgTree.getArg(i);
-    if (auto *intInit = llvm::dyn_cast_or_null<llvm::IntInit>(init)) {
-      auto errorStr = formatv("\"Expected {0} to be {1} but got\" << {2}{3}", parm.getName(), intInit->getValue(), opName, accessorStr);
-      emitMatchCheck(opName, formatv("{0}{1} == {2}", opName, accessorStr, intInit->getValue()), errorStr);
-    } else if (auto *strInit = llvm::dyn_cast_or_null<llvm::StringInit>(init)) {
-      emitMatchCheck(opName, formatv("{0}{1} == \"{2}\"", opName, accessorStr, strInit->getValue()), "\"Type params do not match.\"");
+    if (constraintArgTree.isNestedDagArg(i)) {
+      auto paramConstraintNode = constraintArgTree.getArgAsDagNode(i);
+      if (!paramConstraintNode.isComplexTypeConstraint())
+        llvm::PrintFatalError("Only ComplexTypeConstraints can be nested "
+                              "inside a ComplexTypeConstraint.");
+      llvm::PrintFatalError("Currently, nested ComplexTypeConstraints are not supported.");
+      // TODO(aviand): Support nesting ComplexTypeConstraint.
+      //  This requires replacing the 1000*opIndex + argIndex hack in SymbolInfo
+      //  with support for true nested indices
+    } else {
+      auto errorStr = formatv("\"Expected {0} to be {1} but got\" << {2}[{3}]{4}",
+                              paramName, "{0}", argName, argIndex, paramAccessorStr)
+                          .str();
+
+      auto paramConstraintLeaf = constraintArgTree.getArgAsLeaf(i);
+      if (paramConstraintLeaf.isInt()) {
+        auto value = std::to_string(paramConstraintLeaf.getIntValue());
+        emitMatchCheck(opName,
+                       formatv("{0}[{1}]{2} == {3}", argName, argIndex,
+                               paramAccessorStr, value),
+                       formatv(errorStr.c_str(), value));
+      } else if (paramConstraintLeaf.isString()) {
+        auto value = paramConstraintLeaf.getStringAttr();
+        emitMatchCheck(opName,
+                       formatv("{0}[{1}]{2} == {3}", argName, argIndex,
+                               paramAccessorStr, value),
+                       formatv(errorStr.c_str(), value));
+      } else if (paramConstraintLeaf.isTypeConstraint() ||
+                 paramConstraintLeaf.isAttrConstraint()) {
+        // This better be a valid type
+        auto constraintType = paramConstraintLeaf.getAsConstraint();
+        emitMatchCheck(opName,
+                       formatv("{0}[{1}]{2}.isa<{3}>()", argName, argIndex,
+                               paramAccessorStr,
+                               constraintType.getCppClassName()),
+                       formatv(errorStr.c_str(),
+                               " of type " + constraintType.getCppClassName()));
+      } else if (!paramConstraintLeaf.isUnspecified()) {
+        // do nothing on unspecified, i.e. "no constraint", type parameters
+        llvm::PrintFatalError("Unexpected kind of type parameter.");
+      }
     }
-
   }
 }
 
@@ -876,7 +907,7 @@ void PatternEmitter::emitAttributeMatch(DagNode tree, StringRef opName,
 
   auto matcher = tree.getArgAsLeaf(argIndex);
   if (!matcher.isUnspecified()) {
-    if (!matcher.isAttrMatcher()) {
+    if (!matcher.isAttrConstraint()) {
       PrintFatalError(
           loc, formatv("the {1}-th argument of op '{0}' should be an attribute",
                        op.getOperationName(), argIndex + 1));
@@ -1260,7 +1291,7 @@ std::string PatternEmitter::handleRepeat(DagNode tree, int depth) {
 
     auto startLeaf = tree.getArgAsLeaf(index);
 
-    if (startLeaf.isIntAttr()) {
+    if (startLeaf.isInt()) {
       // literal value
       return std::to_string(startLeaf.getIntValue());
     }
@@ -1361,7 +1392,7 @@ std::string PatternEmitter::handleLocationDirective(DagNode tree) {
 
   if (tree.getNumArgs() == 1) {
     DagLeaf leaf = tree.getArgAsLeaf(0);
-    if (leaf.isStringAttr())
+    if (leaf.isString())
       return formatv("::mlir::NameLoc::get(rewriter.getStringAttr(\"{0}\"))",
                      leaf.getStringAttr())
           .str();
@@ -1376,7 +1407,7 @@ std::string PatternEmitter::handleLocationDirective(DagNode tree) {
   for (int i = 0, e = tree.getNumArgs(); i != e; ++i) {
     DagLeaf leaf = tree.getArgAsLeaf(i);
     // Handle the optional string value.
-    if (leaf.isStringAttr()) {
+    if (leaf.isString()) {
       if (!strAttr.empty())
         llvm::PrintFatalError("Only one string attribute may be specified");
       strAttr = leaf.getStringAttr();
@@ -1404,7 +1435,7 @@ std::string PatternEmitter::handleReturnTypeArg(DagNode returnType, int i,
   }
   // String literal.
   auto dagLeaf = returnType.getArgAsLeaf(i);
-  if (dagLeaf.isStringAttr())
+  if (dagLeaf.isString())
     return tgfmt(dagLeaf.getStringAttr(), &fmtCtx);
   return tgfmt(
       "$0.getType()", &fmtCtx,
@@ -1414,7 +1445,7 @@ std::string PatternEmitter::handleReturnTypeArg(DagNode returnType, int i,
 std::string PatternEmitter::handleOpArgument(DagLeaf leaf,
                                              StringRef patArgName,
                                              Argument *opArg) {
-  if (leaf.isIntAttr()) {
+  if (leaf.isInt()) {
     assert(opArg->is<NamedAttribute *>() &&
            "literal arguments can only be attributes.");
     auto value = leaf.getIntValue();
@@ -1431,7 +1462,7 @@ std::string PatternEmitter::handleOpArgument(DagLeaf leaf,
              std::to_string(value) + ")";
     }
   }
-  if (leaf.isStringAttr()) {
+  if (leaf.isString()) {
     PrintFatalError(loc, "raw string not yet supported as argument");
   }
   if (leaf.isConstantAttr()) {
@@ -1449,7 +1480,7 @@ std::string PatternEmitter::handleOpArgument(DagLeaf leaf,
 
   LLVM_DEBUG(llvm::dbgs() << "handle argument '" << patArgName << "'\n");
   auto argName = symbolInfoMap.getValueAndRangeUse(patArgName);
-  if (leaf.isUnspecified() || leaf.isOperandMatcher()) {
+  if (leaf.isUnspecified() || leaf.isTypeConstraint()) {
     if (symbolInfoMap.find(argName) != symbolInfoMap.end()) {
       auto symbolInfo = symbolInfoMap.find(argName)->second;
       if (symbolInfo.isTypeParam()) {
@@ -2036,13 +2067,13 @@ void StaticMatcherHelper::addPattern(Record *record) {
 }
 
 StringRef StaticMatcherHelper::getVerifierName(DagLeaf leaf) {
-  if (leaf.isAttrMatcher()) {
+  if (leaf.isAttrConstraint()) {
     Optional<StringRef> constraint =
         staticVerifierEmitter.getAttrConstraintFn(leaf.getAsConstraint());
     assert(constraint && "attribute constraint was not uniqued");
     return *constraint;
   }
-  assert(leaf.isOperandMatcher());
+  assert(leaf.isTypeConstraint());
   return staticVerifierEmitter.getTypeConstraintFn(leaf.getAsConstraint());
 }
 
