@@ -159,6 +159,9 @@ private:
   // Returns the symbol of the old value serving as the replacement.
   StringRef handleReplaceWithValue(DagNode tree);
 
+  // TODO(aviand): Document repeat feature
+  std::string handleRepeat(DagNode tree, int depth);
+
   // Trailing directives are used at the end of DAG node argument lists to
   // specify additional behaviour for op matchers and creators, etc.
   struct TrailingDirectives {
@@ -189,19 +192,21 @@ private:
   // DAG `tree` has a specified name, the created op will be assigned to a
   // variable of the given name. Otherwise, a unique name will be used as the
   // result value name.
-  std::string handleOpCreation(DagNode tree, int resultIndex, int depth);
+  std::string handleOpCreation(DagNode tree, int resultIndex, int depth, bool insidePattern = false);
 
   using ChildNodeIndexNameMap = DenseMap<unsigned, std::string>;
 
   // Emits a local variable for each value and attribute to be used for creating
   // an op.
   void createSeparateLocalVarsForOpArgs(DagNode node,
-                                        ChildNodeIndexNameMap &childNodeNames);
+                                        ChildNodeIndexNameMap &childNodeNames,
+                                        bool insideRepeat = false);
 
   // Emits the concrete arguments used to call an op's builder.
   void supplyValuesForOpArgs(DagNode node,
                              const ChildNodeIndexNameMap &childNodeNames,
-                             int depth);
+                             int depth,
+                             bool insideRepeat = false);
 
   // Emits the local variables for holding all values as a whole and all named
   // attributes as a whole to be used for creating an op.
@@ -1208,6 +1213,9 @@ std::string PatternEmitter::handleResultPattern(DagNode resultTree,
   if (resultTree.isReplaceWithValue())
     return handleReplaceWithValue(resultTree).str();
 
+  if(resultTree.isRepeat())
+    return handleRepeat(resultTree, depth);
+
   // Normal op creation.
   auto symbol = handleOpCreation(resultTree, resultIndex, depth);
   if (resultTree.getSymbol().empty()) {
@@ -1231,6 +1239,110 @@ StringRef PatternEmitter::handleReplaceWithValue(DagNode tree) {
   }
 
   return tree.getArgName(0);
+}
+
+std::string PatternEmitter::handleRepeat(DagNode tree, int depth) {
+  assert(tree.isRepeat());
+
+  LLVM_DEBUG(llvm::dbgs() << "handle Repeat pattern: ");
+  LLVM_DEBUG(tree.print(llvm::dbgs()));
+  LLVM_DEBUG(llvm::dbgs() << '\n');
+
+  auto tail = getTrailingDirectives(tree);
+  if (tail.returnType)
+    PrintFatalError(loc, "`repeat` cannot have return type specifier");
+  auto locToUse = getLocation(tail);
+
+  // Helper function to get values
+  auto getValue = [&](int index) -> std::string {
+    if (tree.isNestedDagArg(index))
+      PrintFatalError(loc, "First argument to `repeat` must be a leaf node, not nested Dag.");
+
+    auto startLeaf = tree.getArgAsLeaf(index);
+
+    if (startLeaf.isIntAttr()) {
+      // literal value
+      return std::to_string(startLeaf.getIntValue());
+    }
+
+    if (startLeaf.isUnspecified()) {
+      // variable, which needs to point to a TypeParam
+      auto matchedName = tree.getArgName(index);
+      auto symbolInfo = symbolInfoMap.find(matchedName)->second;
+      if (!symbolInfo.isTypeParam()) {
+        llvm::PrintFatalError(
+            "'repeat' currently supports only literal ints and "
+            "matched type parameters for `start` and `end`");
+      }
+      return symbolInfo.getVarName(matchedName);
+      // TODO(aviand): Are there any other cases that make sense? Attributes?
+    }
+
+    llvm::PrintFatalError(
+          "'repeat' currently supports only literal ints and "
+          "variables for `start` and `end`");
+  };
+
+  // Get start and end value for iteration
+  auto start = getValue(0);
+  auto end = getValue(1);
+
+  // Get the name of the index variable
+  if(tree.isNestedDagArg(2))
+    llvm::PrintFatalError("index for `repeat` must not be nested DAG.");
+  auto indexLeaf = tree.getArgAsLeaf(2);
+  if(!indexLeaf.isUnspecified())
+    llvm::PrintFatalError("index for `repeat` must not be unspecified.");
+  auto indexVar = tree.getArgName(2).str();
+
+  //Emit the matched results BEFORE entering the for loop scope,
+  // so that they are available later
+  SymbolInfoMap repeatMap(loc);
+  pattern.collectBoundSymbols(tree, repeatMap,false, true);
+
+  for (const auto &symbolInfoPair : repeatMap) {
+    const auto &symbol = symbolInfoPair.first;
+    const auto &info = symbolInfoPair.second;
+    if(symbol != indexVar)
+      os << info.getVarDecl(symbol);
+  }
+
+  // the "real" loop variable is i__ so that it doesn't conflict with $i
+  os << formatv("for(auto i__ = {0}; i__ < {1}; ++i__)", start, end);
+  auto scope = os.scope("\n{\n", "\n}\n");
+
+  // build an IntegerAttribute from the current index i
+  os << formatv(
+      "auto {0} = ::mlir::IntegerAttr::get(rewriter.getIndexType(), i__);\n",
+      indexVar);
+
+  for(int argIndex = 3; argIndex < tree.getNumArgs(); ++argIndex) {
+    if (!tree.isNestedDagArg(argIndex))
+      llvm::PrintFatalError(
+          formatv("Argument {0} in `repeat` must be a nested DAG", argIndex));
+
+    auto node = tree.getArgAsDagNode(argIndex);
+    //TODO(aviand): actually handle repeat
+    auto varName = handleOpCreation(node, argIndex, depth + 1, true);
+    llvm::StringRef outerVar, suffix;
+    std::tie(outerVar, suffix) = StringRef(varName).rsplit("__");
+    os << formatv("{0}.push_back({1});\n",outerVar, varName);
+  };
+
+  //SmallVector<std::string, 16> attrs;
+  //for (int i = 0, e = tree.getNumArgs() - tail.numDirectives; i != e; ++i) {
+  //  if (tree.isNestedDagArg(i)) {
+  //    attrs.push_back(
+  //        handleResultPattern(tree.getArgAsDagNode(i), i, depth + 1));
+  //  } else {
+  //    attrs.push_back(
+  //        handleOpArgument(tree.getArgAsLeaf(i), tree.getArgName(i)));
+  //  }
+  //  LLVM_DEBUG(llvm::dbgs() << "Repeat argument #" << i
+  //                          << " replacement: " << attrs[i] << "\n");
+  //}
+
+  return "this_return_value_from_handleRepeat_should_never_be_used";
 }
 
 std::string PatternEmitter::handleLocationDirective(DagNode tree) {
@@ -1497,7 +1609,7 @@ PatternEmitter::getLocation(PatternEmitter::TrailingDirectives &tail) {
 }
 
 std::string PatternEmitter::handleOpCreation(DagNode tree, int resultIndex,
-                                             int depth) {
+                                             int depth, bool insideRepeat) {
   LLVM_DEBUG(llvm::dbgs() << "create op for pattern: ");
   LLVM_DEBUG(tree.print(llvm::dbgs()));
   LLVM_DEBUG(llvm::dbgs() << '\n');
@@ -1526,8 +1638,10 @@ std::string PatternEmitter::handleOpCreation(DagNode tree, int resultIndex,
   // create ops for them and remember the symbol names for them, so that we can
   // use the results in the current node. This happens in a recursive manner.
   for (int i = 0, e = tree.getNumArgs() - tail.numDirectives; i != e; ++i) {
-    if (auto child = tree.getArgAsDagNode(i))
+    if (auto child = tree.getArgAsDagNode(i)) {
+      // TODO(aviand): Add repeat pattern support here?
       childNodeNames[i] = handleResultPattern(child, i, depth + 1);
+    }
   }
 
   // The name of the local variable holding this op.
@@ -1546,6 +1660,11 @@ std::string PatternEmitter::handleOpCreation(DagNode tree, int resultIndex,
     // Strip the index to get the name for the value pack and use it to name the
     // local variable for the op.
     valuePackName = std::string(SymbolInfoMap::getValuePackName(resultValue));
+  }
+
+  if(insideRepeat) {
+    valuePackName = valuePackName + "__i";
+    resultValue = resultValue + "__i";
   }
 
   // Create the local variable for this op.
@@ -1586,7 +1705,7 @@ std::string PatternEmitter::handleOpCreation(DagNode tree, int resultIndex,
     // deduction ability) exists. We go through the separate-parameter builder
     // here given that it's easier for developers to write compared to
     // aggregate-parameter builders.
-    createSeparateLocalVarsForOpArgs(tree, childNodeNames);
+    createSeparateLocalVarsForOpArgs(tree, childNodeNames, insideRepeat);
 
     os.scope().os << formatv("{0} = rewriter.create<{1}>({2}", valuePackName,
                              resultOp.getQualCppClassName(), locToUse);
@@ -1635,7 +1754,7 @@ std::string PatternEmitter::handleOpCreation(DagNode tree, int resultIndex,
 }
 
 void PatternEmitter::createSeparateLocalVarsForOpArgs(
-    DagNode node, ChildNodeIndexNameMap &childNodeNames) {
+    DagNode node, ChildNodeIndexNameMap &childNodeNames, bool insideRepeat) {
   Operator &resultOp = node.getDialectOp(opMap);
 
   // Now prepare operands used for building this op:
@@ -1671,11 +1790,17 @@ void PatternEmitter::createSeparateLocalVarsForOpArgs(
         } else {
           name = std::string(node.getArgName(nodeIndex));
         }
+
+        auto symbolInfo = symbolInfoMap.find(name)->second;
+
+        if (insideRepeat && symbolInfo.isRepeatResult())
+          name = name + "__i";
+
         // Resolve the symbol for all range use so that we have a uniform way of
         // capturing the values.
         std::string range = symbolInfoMap.getValueAndRangeUse(name);
 
-        if (!symbolInfoMap.find(name)->second.isVariadic(name)) {
+        if (!symbolInfo.isVariadic(name)) {
           range = "{" + range + "}";
         }
         os << formatv("for (auto v: {0}) {{\n  {1}.push_back(v);\n}\n", range,
@@ -1688,8 +1813,11 @@ void PatternEmitter::createSeparateLocalVarsForOpArgs(
         os << symbolInfoMap.getValueAndRangeUse(childNodeNames[argIndex]);
       } else {
         DagLeaf leaf = node.getArgAsLeaf(argIndex);
-        auto symbol =
-            symbolInfoMap.getValueAndRangeUse(node.getArgName(argIndex));
+        std::string name = node.getArgName(argIndex).str();
+        auto symbolInfo = symbolInfoMap.find(name)->second;
+        if (insideRepeat && symbolInfo.isRepeatResult())
+          name = name + "__i";
+        auto symbol = symbolInfoMap.getValueAndRangeUse(name);
         if (leaf.isNativeCodeCall()) {
           os << std::string(
               tgfmt(leaf.getNativeCodeTemplate(), &fmtCtx.withSelf(symbol)));
@@ -1706,7 +1834,7 @@ void PatternEmitter::createSeparateLocalVarsForOpArgs(
 }
 
 void PatternEmitter::supplyValuesForOpArgs(
-    DagNode node, const ChildNodeIndexNameMap &childNodeNames, int depth) {
+    DagNode node, const ChildNodeIndexNameMap &childNodeNames, int depth, bool insideRepeat) {
   Operator &resultOp = node.getDialectOp(opMap);
   for (int argIndex = 0, numOpArgs = resultOp.getNumArgs();
        argIndex != numOpArgs; ++argIndex) {
@@ -1719,6 +1847,8 @@ void PatternEmitter::supplyValuesForOpArgs(
       if (!operand->name.empty())
         os << "/*" << operand->name << "=*/";
       os << childNodeNames.lookup(argIndex);
+      if (insideRepeat)
+        os << "__i";
       continue;
     }
 
@@ -1729,6 +1859,8 @@ void PatternEmitter::supplyValuesForOpArgs(
         PrintFatalError(loc, "only NativeCodeCall allowed in nested dag node "
                              "for creating attribute");
       os << formatv("/*{0}=*/{1}", opArgName, childNodeNames.lookup(argIndex));
+      if (insideRepeat)
+        os << "__i";
     } else {
       auto leaf = node.getArgAsLeaf(argIndex);
       // The argument in the result DAG pattern.
@@ -1743,6 +1875,8 @@ void PatternEmitter::supplyValuesForOpArgs(
         os << "/*" << opArgName << "=*/";
       }
       os << handleOpArgument(leaf, patArgName, &opArg);
+      if (insideRepeat)
+        os << "__i";
     }
   }
 }
@@ -1750,6 +1884,8 @@ void PatternEmitter::supplyValuesForOpArgs(
 void PatternEmitter::createAggregateLocalVarsForOpArgs(
     DagNode node, const ChildNodeIndexNameMap &childNodeNames, int depth) {
   Operator &resultOp = node.getDialectOp(opMap);
+
+  //TODO(aviand): Add support for repeat pattern
 
   auto scope = os.scope();
   os << formatv("::llvm::SmallVector<::mlir::Value, 4> "

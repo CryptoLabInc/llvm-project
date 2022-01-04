@@ -211,6 +211,9 @@ def returnType;
 // `either` while pattern matching.
 def either;
 
+//TODO(aviand): Document repeat feature
+def repeat;
+
 //===----------------------------------------------------------------------===//
 // Common value constraints
 //===----------------------------------------------------------------------===//

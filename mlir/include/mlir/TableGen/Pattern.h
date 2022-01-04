@@ -202,6 +202,9 @@ public:
   // Returns whether this DAG is an `either` specifier.
   bool isEither() const;
 
+  // Returns whether this DAG is a `repeat` specifier.
+  bool isRepeat() const;
+
   // Returns true if this DAG node is an operation.
   bool isOperation() const;
 
@@ -298,6 +301,8 @@ public:
 
     bool isTypeParam() const;
 
+    bool isRepeatResult() const;
+
   private:
     // Allow SymbolInfoMap to access private methods.
     friend class SymbolInfoMap;
@@ -314,7 +319,8 @@ public:
     // * MultipleValues: a pack of values not attached to an op (e.g., from
     //   NativeCodeCall). This kind supports indexing.
     // * TypeParam: a C++ value appearing as a type parameter
-    enum class Kind : uint8_t { Attr, Operand, Result, Value, MultipleValues, TypeParam };
+    // * RepeatResult: op result appearing inside a repeat, treated like a variadic symbol
+    enum class Kind : uint8_t { Attr, Operand, Result, Value, MultipleValues, TypeParam, RepeatResult };
 
     // Creates a SymbolInfo instance. `dagAndConstant` is only used for `Attr`
     // and `Operand` so should be llvm::None for `Result` and `Value` kind.
@@ -334,6 +340,9 @@ public:
     }
     static SymbolInfo getResult(const Operator *op) {
       return SymbolInfo(op, Kind::Result, llvm::None);
+    }
+    static SymbolInfo getRepeatResult(const Operator *op) {
+      return SymbolInfo(op, Kind::RepeatResult, llvm::None);
     }
     static SymbolInfo getValue() {
       return SymbolInfo(nullptr, Kind::Value, llvm::None);
@@ -420,6 +429,10 @@ public:
   // Binds the given `symbol` to the results the given `op`. Returns false if
   // `symbol` is already bound.
   bool bindOpResult(StringRef symbol, const Operator &op);
+
+  // Binds the given `symbol` to the results the given `op`. Returns false if
+  // `symbol` is already bound.
+  bool bindOpRepeatResult(StringRef symbol, const Operator &op);
 
   // A helper function for dispatching target value binding functions.
   bool bindValues(StringRef symbol, int numValues = 1);
@@ -547,7 +560,7 @@ public:
   // Recursively collects all bound symbols inside the DAG tree rooted
   // at `tree` and updates the given `infoMap`.
   void collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
-                           bool isSrcPattern);
+                           bool isSrcPattern, bool isRepeatPattern = false);
 
 private:
   // Helper function to verify variable binding.

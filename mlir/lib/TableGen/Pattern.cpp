@@ -125,7 +125,7 @@ bool DagNode::isNativeCodeCall() const {
 bool DagNode::isOperation() const {
   return !isComplexTypeConstraint() && !isNativeCodeCall() &&
          !isReplaceWithValue() && !isLocationDirective() &&
-         !isReturnTypeDirective() && !isEither();
+         !isReturnTypeDirective() && !isEither() && !isRepeat();
 }
 
 bool DagNode::isComplexTypeConstraint() const {
@@ -237,6 +237,11 @@ bool DagNode::isEither() const {
   return dagOpDef->getName() == "either";
 }
 
+bool DagNode::isRepeat() const {
+  auto *dagOpDef = cast<llvm::DefInit>(node->getOperator())->getDef();
+  return dagOpDef->getName() == "repeat";
+}
+
 void DagNode::print(raw_ostream &os) const {
   if (node)
     node->print(os);
@@ -273,6 +278,9 @@ int SymbolInfoMap::SymbolInfo::getStaticValueCount() const {
     return 1;
   case Kind::Result:
     return op->getNumResults();
+  case Kind::RepeatResult:
+    //TODO(aviand): How many "static values" does a RepeatResult have?
+    llvm::PrintFatalError("getStaticValueCount not yet implemented for RepeatResult.");
   case Kind::MultipleValues:
     return getSize();
   case Kind::TypeParam:
@@ -312,6 +320,9 @@ bool SymbolInfoMap::SymbolInfo::isVariadic(StringRef name) const {
   }
   case Kind::TypeParam: {
     return false;
+  }
+  case Kind::RepeatResult: {
+    return true;
   }
   }
 }
@@ -356,6 +367,9 @@ std::string SymbolInfoMap::SymbolInfo::getVarTypeStr(StringRef name) const {
     auto type = attrOrTypeDef.getParameters()[paramIndex].getCppType();
     return type.str();
   }
+  case Kind::RepeatResult: {
+    return "SmallVector<" + op->getQualCppClassName() + ", 4>";
+  }
   }
   llvm_unreachable("unknown kind");
 }
@@ -385,6 +399,7 @@ std::string SymbolInfoMap::SymbolInfo::getTypeParamAccessor(StringRef name) cons
   case Kind::Value:
   case Kind::MultipleValues:
   case Kind::Result:
+  case Kind::RepeatResult:
     assert(kind == Kind::TypeParam &&
            "Cannot call getTypeParamAccessor on other kinds");
   }
@@ -492,6 +507,56 @@ std::string SymbolInfoMap::SymbolInfo::getValueAndRangeUse(
     LLVM_DEBUG(llvm::dbgs() << repl << " (TypeParam)\n");
     return std::string(repl);
   }
+  case Kind::RepeatResult: {
+
+    // Check if we're being asked for <var> or <var>__i
+    // The latter indicates we're inside the repeat where <var> is matched
+    StringRef outerVar, suffix;
+    std::tie(outerVar, suffix) = StringRef(name).rsplit("__");
+    bool insidePattern = suffix == "i";
+
+    // If `index` is greater than zero, then we are referencing a specific
+    // "iteration" version of this result
+    if (index >= 0) {
+      std::string v = std::string(formatv("{0}[{1}]", name, index));
+      if (!op->getResult(index).isVariadic())
+        v = std::string(formatv("(*{0}.begin())", v));
+      auto repl = formatv(fmt, v);
+      LLVM_DEBUG(llvm::dbgs() << repl << " (SingleRepeatResult)\n");
+      return std::string(repl);
+    }
+
+    // TODO(aviand): Is capturing op itself necessary for repeat?
+
+    // // If this op has no result at all but still we bind a symbol to it, it
+    // // means we want to capture the op itself.
+    // if (op->getNumResults() == 0) {
+    //   LLVM_DEBUG(llvm::dbgs() << name << " (Op)\n");
+    //   return std::string(name);
+    // }
+
+    // We are referencing all results of the repeated op. A specific result
+    // can either be a value or a range. Then join them with `separator`.
+    SmallVector<std::string, 4> values;
+    values.reserve(op->getNumResults());
+
+    if (insidePattern) {
+      for (int i = 0, e = op->getNumResults(); i < e; ++i) {
+        std::string v = std::string(
+            formatv("{0}.getODSResults({1})", name, i));
+        if (!op->getResult(i).isVariadic()) {
+          v = std::string(formatv("(*{0}.begin())", v));
+        }
+        values.push_back(std::string(formatv(fmt, v)));
+      }
+      auto repl = llvm::join(values, separator);
+      LLVM_DEBUG(llvm::dbgs() << repl << " (EntireRepeatResult inside Repeat)\n");
+      return repl;
+    }
+    // TODO(aviand): properly support multi-result ops outside repeat pattern
+    LLVM_DEBUG(llvm::dbgs() << outerVar << " (EntireRepeatResult outside Repeat)\n");
+    return outerVar.str();
+  }
   }
   llvm_unreachable("unknown kind");
 }
@@ -554,12 +619,36 @@ std::string SymbolInfoMap::SymbolInfo::getAllRangeUse(
     LLVM_DEBUG(llvm::dbgs() << repl << " (TypeRange)\n");
     return std::string(repl);
   }
+  case Kind::RepeatResult: {
+    if (index >= 0) {
+      auto repl = formatv(fmt, formatv("{0}[{1}]", name, index));
+      LLVM_DEBUG(llvm::dbgs() << repl << " (SingleRepeatResult)\n");
+      return std::string(repl);
+    }
+
+    // We are referencing all results of the multi-result op. Each result should
+    // have a value range, and then join them with `separator`.
+    SmallVector<std::string, 4> values;
+    values.reserve(op->getNumResults());
+
+    for (int i = 0, e = op->getNumResults(); i < e; ++i) {
+      values.push_back(std::string(
+          formatv(fmt, formatv("{0}.WOOPPATTERNCPP626({1})", name, i))));
+    }
+    auto repl = llvm::join(values, separator);
+    LLVM_DEBUG(llvm::dbgs() << repl << " (EntireRepeatResult)\n");
+    return repl;
+  }
   }
   llvm_unreachable("unknown kind");
 }
 
 bool SymbolInfoMap::SymbolInfo::isTypeParam() const {
   return kind == Kind::TypeParam;
+}
+
+bool SymbolInfoMap::SymbolInfo::isRepeatResult() const {
+  return kind == Kind::RepeatResult;
 }
 
 bool SymbolInfoMap::bindOpArgument(DagNode node, StringRef symbol,
@@ -631,6 +720,13 @@ bool SymbolInfoMap::bindTypeArgument(DagNode opNode, const Operator &op, int opA
 bool SymbolInfoMap::bindOpResult(StringRef symbol, const Operator &op) {
   std::string name = getValuePackName(symbol).str();
   auto inserted = symbolInfoMap.emplace(name, SymbolInfo::getResult(&op));
+
+  return symbolInfoMap.count(inserted->first) == 1;
+}
+
+bool SymbolInfoMap::bindOpRepeatResult(StringRef symbol, const Operator &op) {
+  std::string name = getValuePackName(symbol).str();
+  auto inserted = symbolInfoMap.emplace(name, SymbolInfo::getRepeatResult(&op));
 
   return symbolInfoMap.count(inserted->first) == 1;
 }
@@ -730,6 +826,13 @@ int SymbolInfoMap::getStaticValueCount(StringRef symbol) const {
 std::string SymbolInfoMap::getValueAndRangeUse(StringRef symbol,
                                                const char *fmt,
                                                const char *separator) const {
+
+  // Remove the pattern suffix if it is present
+  bool hadSuffix = symbol.endswith("__i");
+  if (hadSuffix) {
+    symbol = symbol.substr(0, symbol.size() - 3);
+  }
+
   int index = -1;
   StringRef name = getValuePackName(symbol, &index);
 
@@ -739,6 +842,9 @@ std::string SymbolInfoMap::getValueAndRangeUse(StringRef symbol,
     PrintFatalError(loc, error);
   }
 
+
+  if (hadSuffix)
+    name = StringRef(name.str() + "__i");
   return it->second.getValueAndRangeUse(name, index, fmt, separator);
 }
 
@@ -896,7 +1002,7 @@ void Pattern::verifyBind(bool result, StringRef symbolName) {
 }
 
 void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
-                                  bool isSrcPattern) {
+                                  bool isSrcPattern, bool isRepeatPattern) {
   auto treeName = tree.getSymbol();
   auto numTreeArgs = tree.getNumArgs();
 
@@ -959,6 +1065,34 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
     return;
   }
 
+  if (tree.isRepeat()) {
+    if (!treeName.empty()) {
+      PrintFatalError(
+          &def, formatv("binding symbol to Repeat is not supported", treeName));
+    }
+
+    auto indexName = tree.getArgName(2);
+    auto index =  tree.getArgAsLeaf(2);
+    if(index.isUnspecified()) {
+      verifyBind(infoMap.bindValue(indexName), indexName);
+    } else {
+      llvm::PrintFatalError(formatv("Repeat's index ({0}) must be "
+                                    "unspecified (?)",
+                                    indexName));
+    }
+
+    for (int i = 3; i != numTreeArgs; ++i) {
+      if (auto treeArg = tree.getArgAsDagNode(i)) {
+        // This DAG node argument is a DAG node itself. Go inside recursively.
+        collectBoundSymbols(treeArg, infoMap, isSrcPattern, true);
+      } else {
+        llvm::PrintFatalError(
+            formatv("Repeat argument {0} must be a nested DAG", i));
+      }
+    }
+    return;
+  }
+
   if (tree.isOperation()) {
     auto &op = getDialectOp(tree);
     auto numOpArgs = op.getNumArgs();
@@ -990,6 +1124,9 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
     if (!treeName.empty()) {
       LLVM_DEBUG(llvm::dbgs()
                  << "found symbol bound to op result: " << treeName << '\n');
+      if(isRepeatPattern)
+        verifyBind(infoMap.bindOpRepeatResult(treeName, op), treeName);
+      else
       verifyBind(infoMap.bindOpResult(treeName, op), treeName);
     }
 
@@ -997,6 +1134,7 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
     // parent DagNode.
     auto collectSymbolInEither = [&](DagNode parent, DagNode tree,
                                      int &opArgIdx) {
+      //TODO(aviand): Support Either appearing inside a repeat pattern
       for (int i = 0; i < tree.getNumArgs(); ++i, ++opArgIdx) {
         if (DagNode subTree = tree.getArgAsDagNode(i)) {
           collectBoundSymbols(subTree, infoMap, isSrcPattern);
