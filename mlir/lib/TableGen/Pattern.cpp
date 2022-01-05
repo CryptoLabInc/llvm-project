@@ -125,7 +125,7 @@ bool DagNode::isNativeCodeCall() const {
 bool DagNode::isOperation() const {
   return !isComplexTypeConstraint() && !isNativeCodeCall() &&
          !isReplaceWithValue() && !isLocationDirective() &&
-         !isReturnTypeDirective() && !isEither() && !isRepeat();
+         !isReturnTypeDirective() && !isEither() && !isRepeat() && !isYield();
 }
 
 bool DagNode::isComplexTypeConstraint() const {
@@ -238,6 +238,12 @@ bool DagNode::isRepeat() const {
   return dagOpDef->getName() == "repeat";
 }
 
+bool DagNode::isYield() const {
+  auto *dagOpDef = cast<llvm::DefInit>(node->getOperator())->getDef();
+  return dagOpDef->getName() == "yield";
+}
+
+
 void DagNode::print(raw_ostream &os) const {
   if (node)
     node->print(os);
@@ -271,6 +277,8 @@ int SymbolInfoMap::SymbolInfo::getStaticValueCount() const {
   case Kind::Attr:
   case Kind::Operand:
   case Kind::Value:
+  case Kind::TypeParam:
+  case Kind::Yield:
     return 1;
   case Kind::Result:
     return op->getNumResults();
@@ -279,8 +287,6 @@ int SymbolInfoMap::SymbolInfo::getStaticValueCount() const {
     llvm::PrintFatalError("getStaticValueCount not yet implemented for RepeatResult.");
   case Kind::MultipleValues:
     return getSize();
-  case Kind::TypeParam:
-    return 1;
   }
   llvm_unreachable("unknown kind");
 }
@@ -319,6 +325,9 @@ bool SymbolInfoMap::SymbolInfo::isVariadic(StringRef name) const {
   }
   case Kind::RepeatResult: {
     return true;
+  }
+  case Kind::Yield: {
+    return false;
   }
   }
 }
@@ -366,6 +375,9 @@ std::string SymbolInfoMap::SymbolInfo::getVarTypeStr(StringRef name) const {
   case Kind::RepeatResult: {
     return "SmallVector<" + op->getQualCppClassName() + ", 4>";
   }
+  case Kind::Yield: {
+    return "::mlir::Value";
+  }
   }
   llvm_unreachable("unknown kind");
 }
@@ -396,6 +408,7 @@ std::string SymbolInfoMap::SymbolInfo::getTypeParamAccessor(StringRef name) cons
   case Kind::MultipleValues:
   case Kind::Result:
   case Kind::RepeatResult:
+  case Kind::Yield:
     assert(kind == Kind::TypeParam &&
            "Cannot call getTypeParamAccessor on other kinds");
   }
@@ -553,6 +566,12 @@ std::string SymbolInfoMap::SymbolInfo::getValueAndRangeUse(
     LLVM_DEBUG(llvm::dbgs() << outerVar << " (EntireRepeatResult outside Repeat)\n");
     return outerVar.str();
   }
+  case Kind::Yield: {
+    //TODO(aviand): Support Yield in getValueAndRangeUse
+    auto repl = formatv(fmt, name);
+    LLVM_DEBUG(llvm::dbgs() << repl << " (Yield)\n");
+    return std::string(repl);
+  }
   }
   llvm_unreachable("unknown kind");
 }
@@ -635,6 +654,12 @@ std::string SymbolInfoMap::SymbolInfo::getAllRangeUse(
     LLVM_DEBUG(llvm::dbgs() << repl << " (EntireRepeatResult)\n");
     return repl;
   }
+  case Kind::Yield: {
+    //TODO(aviand): What to assert for Yield in getAllRangeUse?
+    auto repl = formatv(fmt, formatv("{{{0}}", name));
+    LLVM_DEBUG(llvm::dbgs() << repl << " (Yield)\n");
+    return std::string(repl);
+  }
   }
   llvm_unreachable("unknown kind");
 }
@@ -657,6 +682,7 @@ bool SymbolInfoMap::SymbolInfo::isRepeatResult() const {
 
 bool SymbolInfoMap::bindOpArgument(DagNode node, StringRef symbol,
                                    const Operator &op, int argIndex) {
+  assert(!symbol.empty());
   StringRef name = getValuePackName(symbol);
   if (name != symbol) {
     auto error = formatv(
@@ -688,6 +714,7 @@ bool SymbolInfoMap::bindOpArgument(DagNode node, StringRef symbol,
 
 bool SymbolInfoMap::bindTypeArgument(DagNode opNode, const Operator &op, int opArgIndex, StringRef symbol,
                                      int typeParamIndex) {
+  assert(!symbol.empty());
   LLVM_DEBUG(llvm::dbgs() << "binding type argument " << symbol
                           << " (op dag: " << opNode.node
                           << ", arg index: " << opArgIndex
@@ -722,6 +749,7 @@ bool SymbolInfoMap::bindTypeArgument(DagNode opNode, const Operator &op, int opA
 }
 
 bool SymbolInfoMap::bindOpResult(StringRef symbol, const Operator &op) {
+  assert(!symbol.empty());
   std::string name = getValuePackName(symbol).str();
   auto inserted = symbolInfoMap.emplace(name, SymbolInfo::getResult(&op));
 
@@ -729,34 +757,55 @@ bool SymbolInfoMap::bindOpResult(StringRef symbol, const Operator &op) {
 }
 
 bool SymbolInfoMap::bindOpRepeatResult(StringRef symbol, const Operator &op) {
+  assert(!symbol.empty());
   std::string name = getValuePackName(symbol).str();
   auto inserted = symbolInfoMap.emplace(name, SymbolInfo::getRepeatResult(&op));
 
-  return symbolInfoMap.count(inserted->first) == 1;
+  return isBoundAlready(inserted->first);
 }
 
 bool SymbolInfoMap::bindValues(StringRef symbol, int numValues) {
+  assert(!symbol.empty());
   std::string name = getValuePackName(symbol).str();
   if (numValues > 1)
     return bindMultipleValues(name, numValues);
   return bindValue(name);
 }
 
+
+bool SymbolInfoMap::isBoundAlready(std::string name) const {
+  int count = 0;
+  for(auto &p : symbolInfoMap) {
+    count += p.first == name && p.second.kind != SymbolInfo::Kind::Yield;
+  }
+  return count == 1;
+}
+
 bool SymbolInfoMap::bindValue(StringRef symbol) {
+  assert(!symbol.empty());
   auto inserted = symbolInfoMap.emplace(symbol.str(), SymbolInfo::getValue());
+  return isBoundAlready(inserted->first);
+}
+
+bool SymbolInfoMap::bindYield(StringRef symbol) {
+  assert(!symbol.empty());
+  auto inserted = symbolInfoMap.emplace(symbol.str(), SymbolInfo::getYield());
+  // Since this is a Yield, we can't use isBoundAlready, which ignores Yield symbols
   return symbolInfoMap.count(inserted->first) == 1;
 }
 
 bool SymbolInfoMap::bindMultipleValues(StringRef symbol, int numValues) {
+  assert(!symbol.empty());
   std::string name = getValuePackName(symbol).str();
   auto inserted =
       symbolInfoMap.emplace(name, SymbolInfo::getMultipleValues(numValues));
-  return symbolInfoMap.count(inserted->first) == 1;
+  return isBoundAlready(inserted->first);
 }
 
 bool SymbolInfoMap::bindAttr(StringRef symbol) {
+  assert(!symbol.empty());
   auto inserted = symbolInfoMap.emplace(symbol.str(), SymbolInfo::getAttr());
-  return symbolInfoMap.count(inserted->first) == 1;
+  return isBoundAlready(inserted->first);
 }
 
 bool SymbolInfoMap::contains(StringRef symbol) const {
@@ -1085,7 +1134,15 @@ void Pattern::collectBoundSymbols(DagNode tree, SymbolInfoMap &infoMap,
                                     indexName));
     }
 
-    for (int i = 3; i != numTreeArgs; ++i) {
+    auto yield = tree.getArgAsDagNode(3);
+    int startArgIndex = 3;
+    if (yield.isYield()) {
+      auto yieldName = yield.getSymbol();
+      verifyBind(infoMap.bindYield(yieldName), yieldName);
+      startArgIndex++;
+    }
+
+    for (int i = startArgIndex; i != numTreeArgs; ++i) {
       if (auto treeArg = tree.getArgAsDagNode(i)) {
         // This DAG node argument is a DAG node itself. Go inside recursively.
         collectBoundSymbols(treeArg, infoMap, isSrcPattern, true);

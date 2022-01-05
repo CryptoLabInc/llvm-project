@@ -1326,6 +1326,25 @@ std::string PatternEmitter::handleRepeat(DagNode tree, int depth) {
     llvm::PrintFatalError("index for `repeat` must not be unspecified.");
   auto indexVar = tree.getArgName(2).str();
 
+  // Check if there is a yield statement
+  int startArgIndex = 3;
+  bool hasYield = false;
+  std::string yieldVar = "";
+  if(tree.isNestedDagArg(3)) {
+    auto node = tree.getArgAsDagNode(3);
+    if(node.isYield()) {
+      yieldVar = node.getSymbol().str();
+      auto yieldInit = node.getArgName(0);
+      auto symbolInfo = symbolInfoMap.find(yieldInit)->second;
+      symbolInfoMap.bindYield(yieldVar);
+      hasYield = true;
+      startArgIndex += 1;
+      os << formatv("::mlir::Value {0} = {1};\n",
+                    yieldVar,
+                    symbolInfo.getVarName(yieldInit));
+    }
+  }
+
   //Emit the matched results BEFORE entering the for loop scope,
   // so that they are available later
   SymbolInfoMap repeatMap(loc);
@@ -1334,8 +1353,9 @@ std::string PatternEmitter::handleRepeat(DagNode tree, int depth) {
   for (const auto &symbolInfoPair : repeatMap) {
     const auto &symbol = symbolInfoPair.first;
     const auto &info = symbolInfoPair.second;
-    if(symbol != indexVar)
+    if(symbol != indexVar && symbol != yieldVar) {
       os << info.getVarDecl(symbol);
+    }
   }
 
   // the "real" loop variable is i__ so that it doesn't conflict with $i
@@ -1347,7 +1367,7 @@ std::string PatternEmitter::handleRepeat(DagNode tree, int depth) {
       "auto {0} = ::mlir::IntegerAttr::get(rewriter.getIndexType(), i__);\n",
       indexVar);
 
-  for(int argIndex = 3; argIndex < tree.getNumArgs(); ++argIndex) {
+  for(int argIndex = startArgIndex; argIndex < tree.getNumArgs(); ++argIndex) {
     if (!tree.isNestedDagArg(argIndex))
       llvm::PrintFatalError(
           formatv("Argument {0} in `repeat` must be a nested DAG", argIndex));
@@ -1357,7 +1377,10 @@ std::string PatternEmitter::handleRepeat(DagNode tree, int depth) {
     auto varName = handleOpCreation(node, argIndex, depth + 1, true);
     llvm::StringRef outerVar, suffix;
     std::tie(outerVar, suffix) = StringRef(varName).rsplit("__");
-    os << formatv("{0}.push_back({1});\n",outerVar, varName);
+    if (outerVar == yieldVar)
+      os << formatv("{0} = {1};\n", outerVar, varName);
+    else
+      os << formatv("{0}.push_back({1});\n", outerVar, varName);
   };
 
   //SmallVector<std::string, 16> attrs;
@@ -1831,7 +1854,7 @@ void PatternEmitter::createSeparateLocalVarsForOpArgs(
         // capturing the values.
         std::string range = symbolInfoMap.getValueAndRangeUse(name);
 
-        if (!symbolInfo.isVariadic(name)) {
+        if (!symbolInfo.isVariadic(name) || (symbolInfo.isRepeatResult() && insideRepeat)) {
           range = "{" + range + "}";
         }
         os << formatv("for (auto v: {0}) {{\n  {1}.push_back(v);\n}\n", range,

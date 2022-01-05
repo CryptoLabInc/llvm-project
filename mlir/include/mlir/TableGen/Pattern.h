@@ -205,6 +205,9 @@ public:
   // Returns whether this DAG is a `repeat` specifier.
   bool isRepeat() const;
 
+  // Returns whether this DAG is a `yield` specifier.
+  bool isYield() const;
+
   // Returns true if this DAG node is an operation.
   bool isOperation() const;
 
@@ -323,7 +326,7 @@ public:
     //   NativeCodeCall). This kind supports indexing.
     // * TypeParam: a C++ value appearing as a type parameter
     // * RepeatResult: op result appearing inside a repeat, treated like a variadic symbol
-    enum class Kind : uint8_t { Attr, Operand, Result, Value, MultipleValues, TypeParam, RepeatResult };
+    enum class Kind : uint8_t { Attr, Operand, Result, Value, MultipleValues, TypeParam, RepeatResult, Yield };
 
     // Creates a SymbolInfo instance. `dagAndConstant` is only used for `Attr`
     // and `Operand` so should be llvm::None for `Result` and `Value` kind.
@@ -349,6 +352,9 @@ public:
     }
     static SymbolInfo getValue() {
       return SymbolInfo(nullptr, Kind::Value, llvm::None);
+    }
+    static SymbolInfo getYield() {
+      return SymbolInfo(nullptr, Kind::Yield, llvm::None);
     }
     static SymbolInfo getMultipleValues(int numValues) {
       return SymbolInfo(nullptr, Kind::MultipleValues,
@@ -444,6 +450,10 @@ public:
   // `symbol` is already bound.
   bool bindValue(StringRef symbol);
 
+  // Registers the given `symbol` as bound to a Yield.
+  // Yield bounds do not prevent binding the symbol later
+  bool bindYield(StringRef symbol);
+
   // Registers the given `symbol` as bound to a MultipleValue. Return false if
   // `symbol` is already bound.
   bool bindMultipleValues(StringRef symbol, int numValues);
@@ -515,6 +525,8 @@ private:
   // Pattern instantiation location. This is intended to be used as parameter
   // to PrintFatalError() to report errors.
   ArrayRef<SMLoc> loc;
+
+  bool isBoundAlready(std::string name) const;
 };
 
 // Wrapper class providing helper methods for accessing MLIR Pattern defined

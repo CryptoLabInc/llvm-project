@@ -214,6 +214,9 @@ def either;
 //TODO(aviand): Document repeat feature
 def repeat;
 
+//TODO(aviand): Document DDR/repeat's "yield" feature
+def yield;
+
 //===----------------------------------------------------------------------===//
 // Common value constraints
 //===----------------------------------------------------------------------===//
