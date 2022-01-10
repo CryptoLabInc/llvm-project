@@ -874,6 +874,7 @@ void PatternEmitter::emitComplexTypeConstraintOperandMatch(
       }
     }
   }
+  operandIndex++;
 }
 
 void PatternEmitter::emitAttributeMatch(DagNode tree, StringRef opName,
