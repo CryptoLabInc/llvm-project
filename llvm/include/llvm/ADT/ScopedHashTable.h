@@ -205,6 +205,14 @@ public:
     return iterator(I->second);
   }
 
+  auto mapBegin() {
+    return TopLevelMap.begin();
+  }
+
+  auto mapEnd() {
+    return TopLevelMap.end();
+  }
+
   ScopeTy *getCurScope() { return CurScope; }
   const ScopeTy *getCurScope() const { return CurScope; }
 
