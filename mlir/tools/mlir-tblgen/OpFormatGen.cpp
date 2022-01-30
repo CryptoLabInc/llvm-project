@@ -2311,6 +2311,7 @@ LogicalResult OpFormatParser::verify(SMLoc loc,
           canInferResultTypes = true;
       }
     }
+    //TODO(aviand): OpFormatGen should accept DeclareOpInterfaceMethods<trait>
   }
 
   // Verify the state of the various operation components.
